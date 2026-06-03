@@ -124,6 +124,17 @@
     display: flex; align-items: center; gap: 12px;
     font-size: 18px; font-weight: 700; color: var(--accent);
   }
+  .version-pill {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:5px 12px;
+    border-radius:999px;
+    background:rgba(245,158,11,0.12);
+    border:1px solid rgba(245,158,11,0.38);
+    color:var(--gold);
+    font-size:12px;
+    font-weight:800;
+    box-shadow:0 0 18px rgba(245,158,11,0.16);
+  }
   .logo-icon {
     width: 36px; height: 36px;
     background: linear-gradient(135deg, var(--accent), var(--accent2));
@@ -172,6 +183,7 @@
   .nav-item.active {
     color:var(--accent); background:rgba(0,212,255,0.08);
     border-right-color:var(--accent);
+    box-shadow:inset -18px 0 28px rgba(0,212,255,0.08);
   }
   .nav-icon { font-size:16px; }
   .badge {
@@ -201,9 +213,13 @@
     background:var(--surface); border:1px solid var(--border);
     border-radius:12px; padding:18px;
     position:relative; overflow:hidden;
-    transition: border-color .2s;
+    transition: transform .2s, border-color .2s, box-shadow .2s;
   }
-  .stat-card:hover { border-color:var(--accent); }
+  .stat-card:hover {
+    transform:translateY(-2px);
+    border-color:var(--accent);
+    box-shadow:0 12px 30px rgba(0,0,0,0.18), var(--glow);
+  }
   .stat-card::before {
     content:''; position:absolute; top:0; right:0;
     width:60px; height:60px;
@@ -500,9 +516,63 @@
   ::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
 
   @media(max-width:900px){
+    .header{
+      height:auto;
+      min-height:64px;
+      padding:10px 14px;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .header-actions{ flex-wrap:wrap; justify-content:flex-end; }
+    .app{
+      height:auto;
+      min-height:calc(100vh - 64px);
+      flex-direction:column;
+    }
+    .sidebar{
+      width:100%;
+      flex-direction:row;
+      overflow-x:auto;
+      overflow-y:hidden;
+      padding:8px;
+      border-left:0;
+      border-bottom:1px solid var(--border);
+    }
+    .nav-section{ display:none; }
+    .nav-item{
+      flex:0 0 auto;
+      border-right:0;
+      border-bottom:3px solid transparent;
+      border-radius:8px;
+      padding:9px 12px;
+    }
+    .nav-item.active{ border-bottom-color:var(--accent); }
+    .main{ padding:16px; }
+    .page-header{ align-items:flex-start; gap:12px; flex-direction:column; }
     .stats-grid{ grid-template-columns:repeat(2,1fr); }
     .form-grid{ grid-template-columns:repeat(2,1fr); }
+    .form-grid-3{ grid-template-columns:1fr; }
     .backup-grid{ grid-template-columns:1fr; }
+    .records-header,
+    .section-header,
+    .form-footer{
+      align-items:flex-start;
+      gap:12px;
+      flex-direction:column;
+    }
+  }
+
+  @media(max-width:560px){
+    .stats-grid,
+    .form-grid{
+      grid-template-columns:1fr;
+    }
+    .form-group.span2{ grid-column:span 1; }
+    .backup-status{ display:none; }
+    .tabs{ width:100%; overflow-x:auto; }
+    .tab{ flex:1 0 auto; text-align:center; }
+    .search-box{ width:100%; }
+    .search-box input{ width:100%; }
   }
 </style>
 </head>
@@ -1765,6 +1835,75 @@ let state = {
 let backupTimer = null;
 let filterType = 'all';
 
+const DB_NAME = 'smartWarehouseInternalDB';
+const DB_VERSION = 1;
+const DB_STORE = 'appData';
+
+function openInternalDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) { reject(new Error('IndexedDB غير مدعوم')); return; }
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbGet(key) {
+  const db = await openInternalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const req = tx.objectStore(DB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => db.close();
+  });
+}
+
+async function dbSet(key, value) {
+  const db = await openInternalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).put(value, key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+function saveToInternalDb(key, value) {
+  dbSet(key, value).catch(err => console.warn('IndexedDB save failed:', key, err));
+}
+
+async function loadPersistentData() {
+  try {
+    const [savedState, savedInv, savedCatalog] = await Promise.all([
+      dbGet('warehouseData'),
+      dbGet('invData'),
+      dbGet('catalogData')
+    ]);
+    if (savedState?.receive && savedState?.issue) state = savedState;
+    else {
+      const legacyState = localStorage.getItem('warehouseData');
+      if (legacyState) state = JSON.parse(legacyState);
+    }
+    if (savedInv) invData = savedInv;
+    if (savedCatalog) catalogData = savedCatalog;
+  } catch (err) {
+    console.warn('IndexedDB load failed, using localStorage:', err);
+    const legacyState = localStorage.getItem('warehouseData');
+    if (legacyState) state = JSON.parse(legacyState);
+  }
+}
+
+function saveAllPersistentData() {
+  saveToInternalDb('warehouseData', state);
+  saveToInternalDb('invData', invData);
+  saveToInternalDb('catalogData', catalogData);
+}
+
 
 // ══════════════════════════════════════════
 //  THEME TOGGLE
@@ -1792,7 +1931,7 @@ function toggleTheme() {
 // ══════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════
-window.onload = () => {
+window.onload = async () => {
   // Restore theme
   applyTheme(localStorage.getItem('themeMode') || 'light');
 
@@ -1803,9 +1942,10 @@ window.onload = () => {
   const today = now2.toISOString().split('T')[0];
   ['r_date','i_date'].forEach(id => document.getElementById(id).value = today);
 
-  // Load from localStorage
-  const saved = localStorage.getItem('warehouseData');
-  if (saved) { state = JSON.parse(saved); updateAll(); }
+  // Load from internal database, with localStorage fallback
+  await loadPersistentData();
+  updateAll();
+  saveAllPersistentData();
 
   // Add initial rows
   addItemRow('r'); addItemRow('i');
@@ -1822,6 +1962,7 @@ window.onload = () => {
 
 function save() {
   localStorage.setItem('warehouseData', JSON.stringify(state));
+  saveToInternalDb('warehouseData', state);
   updateAll();
   lastExportDocCount = 0; // reset so beforeunload triggers if needed
 }
@@ -1845,13 +1986,6 @@ function updateSeq() {
 // ══════════════════════════════════════════
 //  NAVIGATION
 // ══════════════════════════════════════════
-function showPage(name) {
-  document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.add('hidden'));
-  document.getElementById('page-' + name).classList.remove('hidden');
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-  event.currentTarget && event.currentTarget.classList.add('active');
-}
-
 // ══════════════════════════════════════════
 //  ITEM ROWS
 // ══════════════════════════════════════════
@@ -2591,6 +2725,7 @@ function saveInvItemModal() {
       if (rowIdx >= 0) {
         invData[code].rows[rowIdx] = [rowIdx+1, storeNum, name, qty, parts, price, value];
         localStorage.setItem('invData', JSON.stringify(invData));
+        saveToInternalDb('invData', invData);
         showToast('✅ تم تعديل كشف المخزون','success');
       } else {
         showToast('⚠ لم يتم العثور على المادة في كشف المخزون المستورد','info');
@@ -2658,6 +2793,7 @@ function clearInv(code) {
   if (!confirm('هل تريد حذف بيانات الكشف المستورد لهذا المخزن؟')) return;
   delete invData[code];
   localStorage.setItem('invData', JSON.stringify(invData));
+  saveToInternalDb('invData', invData);
   runLiveInv();
   showToast('🗑 تم الحذف','info');
 }
@@ -2688,6 +2824,7 @@ function uploadInv(event, code) {
       if (!rows.length) { showToast('❌ لم يُعثر على بيانات','info'); return; }
       invData[code] = { rows, fileName:file.name, uploadedAt:new Date().toISOString() };
       localStorage.setItem('invData', JSON.stringify(invData));
+      saveToInternalDb('invData', invData);
       runLiveInv();
       showToast(`✅ رُفع ${rows.length} مادة للمخزن ${code}`,'success');
     } catch(err) { showToast('❌ خطأ: '+err.message,'info'); }
@@ -2787,11 +2924,19 @@ function pickAC(e, el, prefix) {
 }
 
 // Patch showPage
-function showPage(name) {
+function showPage(name, evt) {
+  const page = document.getElementById('page-' + name);
+  if (!page) return;
+
   document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.add('hidden'));
-  document.getElementById('page-' + name).classList.remove('hidden');
+  page.classList.remove('hidden');
+
+  const activeNav = evt?.currentTarget ||
+    [...document.querySelectorAll('.nav-item')].find(el =>
+      (el.getAttribute('onclick') || '').includes(`showPage('${name}')`)
+    );
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-  event && event.currentTarget && event.currentTarget.classList.add('active');
+  if (activeNav) activeNav.classList.add('active');
   if (name === 'inventory') {
     const df = document.getElementById('inv_date_f');
     if (df && !df.value) df.value = new Date().toISOString().split('T')[0];
@@ -3477,6 +3622,7 @@ let catFiltered = [];
 
 function saveCatalogToStorage() {
   localStorage.setItem('catalogData', JSON.stringify(catalogData));
+  saveToInternalDb('catalogData', catalogData);
 }
 
 // Merge items from transactions into catalogue (auto-discover)
@@ -4031,6 +4177,7 @@ function applyRollover() {
 
   // حفظ كل شيء
   localStorage.setItem('invData', JSON.stringify(invData));
+  saveToInternalDb('invData', invData);
   save(); // يحفظ state ويحدث كل الواجهة
 
   // أضف للكتالوج
